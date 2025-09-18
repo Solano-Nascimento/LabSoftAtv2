@@ -1,0 +1,23 @@
+# venv local
+.venv/
+
+# caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+
+# pacotes/build
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# notebooks
+.ipynb_checkpoints/
+
+# dotenv (segredos)
+.env
+.env.*
+!.env.example
+
