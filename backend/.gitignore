@@ -12,6 +12,7 @@ build/
 dist/
 *.egg-info/
 pip-wheel-metadata/
+nodes_modules/
 
 # notebooks
 .ipynb_checkpoints/
@@ -21,3 +22,5 @@ pip-wheel-metadata/
 .env.*
 !.env.example
 
+
+/generated/prisma
