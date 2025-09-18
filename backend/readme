@@ -38,8 +38,9 @@ python -m prisma init
 
 # 7) Gerar o cliente Prisma e aplicar migrações
 # (garanta que o Node 22 está ativo neste shell)
+python -m prisma db pull
 python -m prisma generate
-python -m prisma migrate dev --name init
+
 
 # 7.1) Caso tenha usado Node 23 anteriormente e esteja com erro estranho,
 # limpe o cache do Prisma Python e gere de novo:
