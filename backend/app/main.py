@@ -1,22 +1,24 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List, Optional
+from uuid import UUID
+from typing import List, Dict, Any
 
+import os
 from fastapi import FastAPI, HTTPException, Response, status
-from pydantic import BaseModel, Field, field_validator
+from dotenv import load_dotenv
 
 from prisma import Prisma
 from prisma.errors import RecordNotFoundError
 
-from app.schemas import BookCreate, BookResponse
+from app.schemas import BookCreate, BookUpdate, BookResponse
 
-from dotenv import load_dotenv
+
+# --- env ---
 load_dotenv()
-
-import os
-print("DB_URL startswith:", os.getenv("DATABASE_URL", "")[:30], "...")  # sem logar a senha
+print("DB_URL startswith:", os.getenv("DATABASE_URL", "")[:30], "...")  # debug seguro
 
 
+# --- prisma client ---
 prisma = Prisma()
 
 
@@ -33,129 +35,90 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Biblioteca API", lifespan=lifespan)
 
 
-class BookBase(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    authors: List[str] = Field(..., min_items=1)
-    page_count: int = Field(..., ge=1)
-    pub_year: int = Field(..., ge=0)
-
-    @field_validator("title")
-    @classmethod
-    def strip_title(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("O título não pode ser vazio.")
-        return stripped
-
-    @field_validator("authors")
-    @classmethod
-    def validate_authors(cls, value: List[str]) -> List[str]:
-        cleaned = [author.strip() for author in value if author.strip()]
-        if not cleaned:
-            raise ValueError("Informe pelo menos um autor válido.")
-        return cleaned
-
-
-class BookCreate(BookBase):
-    pass
-
-
-class BookUpdate(BaseModel):
-    title: Optional[str] = Field(None, min_length=1, max_length=255)
-    authors: Optional[List[str]] = Field(None, min_items=1)
-    page_count: Optional[int] = Field(None, ge=1)
-    pub_year: Optional[int] = Field(None, ge=0)
-
-    @field_validator("title")
-    @classmethod
-    def strip_title(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("O título não pode ser vazio.")
-        return stripped
-
-    @field_validator("authors")
-    @classmethod
-    def validate_authors(cls, value: Optional[List[str]]) -> Optional[List[str]]:
-        if value is None:
-            return value
-        cleaned = [author.strip() for author in value if author.strip()]
-        if not cleaned:
-            raise ValueError("Informe pelo menos um autor válido.")
-        return cleaned
-
-
-class BookResponse(BookBase):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-
-
+# --- helpers ---
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _to_book_response(record) -> BookResponse:
-    if hasattr(record, "model_dump"):
-        data = record.model_dump()
-    elif hasattr(record, "dict"):
-        data = record.dict()
-    else:
-        data = record.__dict__
-    return BookResponse(**data)
+    # Sanear autores (remover strings vazias) e montar resposta
+    authors = [a for a in (getattr(record, "authors", []) or []) if a and a.strip()]
+    return BookResponse(
+        id=record.id,
+        title=getattr(record, "title", None),
+        page_count=getattr(record, "page_count", None),
+        pub_year=getattr(record, "pub_year", None),
+        created_at=getattr(record, "created_at"),
+        updated_at=getattr(record, "updated_at"),
+        authors=authors,
+    )
 
 
+# --- health ---
 @app.get("/")
-async def healthcheck() -> dict[str, str]:
+async def healthcheck() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+# --- books ---
 @app.get("/books", response_model=List[BookResponse])
-async def list_books() -> List[BookResponse]:
+async def list_books():
+    # order by created_at desc
     records = await prisma.books.find_many(order={"created_at": "desc"})
-    return [_to_book_response(record) for record in records]
+    return [_to_book_response(r) for r in records]
 
 
 @app.get("/books/{book_id}", response_model=BookResponse)
-async def get_book(book_id: str) -> BookResponse:
-    record = await prisma.books.find_unique(where={"id": book_id})
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Livro não encontrado.")
-    return _to_book_response(record)
+async def get_book(book_id: UUID):
+    r = await prisma.books.find_unique(where={"id": str(book_id)})
+    if not r:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return _to_book_response(r)
 
 
 @app.post("/books", response_model=BookResponse, status_code=201)
 async def create_book(payload: BookCreate):
-    record = await prisma.books.create(
-        data={
-            "title": payload.title,
-            "page_count": payload.page_count,
-            "pub_year": payload.pub_year,
-            "authors": payload.authors,
-        }
-    )
-    return _to_book_response(record)
+    # autores nunca deve ser None (array do Postgres não aceita NULL) -> use []
+    data: Dict[str, Any] = {
+        "title": payload.title,
+        "page_count": payload.page_count,
+        "pub_year": payload.pub_year,
+        "authors": payload.authors or [],
+    }
+    r = await prisma.books.create(data=data)
+    return _to_book_response(r)
 
 
 @app.put("/books/{book_id}", response_model=BookResponse)
-async def update_book(book_id: str, payload: BookUpdate) -> BookResponse:
-    data = payload.model_dump(exclude_unset=True)
+@app.patch("/books/{book_id}", response_model=BookResponse)
+async def patch_book(book_id: UUID, payload: BookUpdate):
+    # monta 'data' apenas com campos fornecidos
+    data: Dict[str, Any] = {}
+    if payload.title is not None:
+        data["title"] = payload.title
+    if payload.page_count is not None:
+        data["page_count"] = payload.page_count
+    if payload.pub_year is not None:
+        data["pub_year"] = payload.pub_year
+    if payload.authors is not None:
+        data["authors"] = payload.authors  # já normalizados; lista (talvez vazia)
+
     if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nenhum dado para atualização.")
+        raise HTTPException(status_code=400, detail="Nenhum dado para atualização.")
+
     data["updated_at"] = _now_utc()
+
     try:
-        record = await prisma.books.update(where={"id": book_id}, data=data)
+        r = await prisma.books.update(where={"id": str(book_id)}, data=data)
     except RecordNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Livro não encontrado.")
-    return _to_book_response(record)
+        raise HTTPException(status_code=404, detail="Book not found")
+    return _to_book_response(r)
 
 
 @app.delete("/books/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_book(book_id: str) -> Response:
+async def delete_book(book_id: UUID) -> Response:
     try:
-        await prisma.books.delete(where={"id": book_id})
+        await prisma.books.delete(where={"id": str(book_id)})
     except RecordNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Livro não encontrado.")
+        raise HTTPException(status_code=404, detail="Book not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,31 +1,59 @@
-# app/schemas.py (exemplo)
 from datetime import datetime
+from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
 
-CURRENT_YEAR = datetime.now().year
 
 class BookCreate(BaseModel):
-    title: str = Field(min_length=1)
-    page_count: int | None = Field(default=None, ge=1, le=100000)
-    pub_year: int = Field(ge=1450, le=CURRENT_YEAR)   # ajuste os limites que fizerem sentido
-    authors: list[str]
+    # todos opcionais: se ausentes, ficam como None (ou [] no caso de authors, via validator)
+    title: Optional[str] = None
+    page_count: Optional[int] = None
+    pub_year: Optional[int] = None
+    authors: Optional[List[str]] = None  # pode vir None
 
     @field_validator('authors', mode='before')
     @classmethod
-    def clean_authors(cls, v):
-        # aceita string única ou lista
+    def normalize_authors_create(cls, v):
+        # aceita None, string única ou lista; remove strings vazias/whitespace
+        if v is None:
+            return []
         if isinstance(v, str):
             v = [v]
-        cleaned = [s.strip() for s in (v or []) if isinstance(s, str) and s.strip()]
-        if not cleaned:
-            raise ValueError('Informe pelo menos um autor válido.')
-        return cleaned
+        return [s.strip() for s in v if isinstance(s, str) and s.strip()]
+
+
+class BookUpdate(BaseModel):
+    # PATCH/PUT parcial: apenas campos presentes serão alterados
+    title: Optional[str] = None
+    page_count: Optional[int] = None
+    pub_year: Optional[int] = None
+    authors: Optional[List[str]] = None
+
+    @field_validator('authors', mode='before')
+    @classmethod
+    def normalize_authors_update(cls, v):
+        # None => não alterar; se vier valor, limpar
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = [v]
+        return [s.strip() for s in v if isinstance(s, str) and s.strip()]
+
 
 class BookResponse(BaseModel):
+    # resposta sempre consistente; authors vira lista (talvez vazia)
     id: str
-    title: str | None = None
-    page_count: int | None = None
-    pub_year: int | None = None
+    title: Optional[str] = None
+    page_count: Optional[int] = None
+    pub_year: Optional[int] = None
     created_at: datetime
     updated_at: datetime
-    authors: list[str]
+    authors: List[str] = []  # sempre lista
+
+    @field_validator('authors', mode='before')
+    @classmethod
+    def normalize_authors_resp(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        return [s.strip() for s in v if isinstance(s, str) and s.strip()]
